@@ -1,7 +1,7 @@
 /datasets
 /venv
 /segformer*
-*/*.pth
+unet_model.pth
 /experiments
 /.ipynb_checkpoints/
 /__pycache__/
