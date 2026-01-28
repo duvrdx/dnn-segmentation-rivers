@@ -1,0 +1,8 @@
+/datasets
+/venv
+/segformer*
+*/*.pth
+/experiments
+/.ipynb_checkpoints/
+/__pycache__/
+final_results*
