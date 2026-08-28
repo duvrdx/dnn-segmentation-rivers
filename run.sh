@@ -71,7 +71,8 @@ if [[ -f "./venv/bin/activate" ]]; then
     source ./venv/bin/activate
 fi
 
-DATA_DIRS_STR=$(IFS=,; echo "${DATA_DIRS[*]}")
+DATA_DIRS_STR=$(printf '%s,' "${DATA_DIRS[@]}")
+DATA_DIRS_STR="${DATA_DIRS_STR%,}"
 
 send_telegram "🚀 Treino Iniciado!
 Backbones: ${BACKBONES[*]} | Epochs: $EPOCHS | Img size: $IMG_SIZE | Crop factor: $CROP_FACTOR
