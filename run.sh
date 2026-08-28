@@ -6,7 +6,8 @@ DATA_DIRS=(
     "./Datasets/itapemirim_river"
     "./Datasets/doce_river"
 )
-BACKBONES=("resnet50" "resnet152")
+# Backbones válidos: timm-efficientnet-b7, mit_b5, resnet152, efficientnet-b5
+BACKBONES=("resnet152")
 EPOCHS=50
 BATCH_SIZE=8
 IMG_SIZE=512
