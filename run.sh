@@ -3,8 +3,8 @@ set -euo pipefail
 
 # ─── Configuração ───────────────────────────────────────────────────────────
 DATA_DIRS=(
-    # "/home/duvrdx/mestrado/Datasets/itapemirim_river"
-    "/home/duvrdx/mestrado/Datasets/doce_river"
+    "./Datasets/itapemirim_river"
+    "./Datasets/doce_river"
 )
 BACKBONE="resnet152"
 EPOCHS=1

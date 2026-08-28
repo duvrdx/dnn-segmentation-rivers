@@ -3,6 +3,9 @@
 
 # Pastas de dados
 /datasets/
+
+# Pasta de dados com D maiúsculo
+/Datasets/
 *.tif
 *.tiff
 
