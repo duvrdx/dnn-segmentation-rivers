@@ -1,8 +1,30 @@
-/datasets
-/venv
-/segformer*
+# Ambiente virtual
+/venv/
+
+# Pastas de dados
+/datasets/
+*.tif
+*.tiff
+
+# Arquivos temporários / metadados
+*:Zone.Identifier
+
+# Modelos treinados grandes
+**/*.pth
 unet_model.pth
-/experiments
-/.ipynb_checkpoints/
-/__pycache__/
+
+# Logs de execução
+/logs/
+
+# Resultados de execuções locais e experimentos
+/test_results/
+/experiments/
+/experiments_old/
+/experiments2/
 final_results*
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/

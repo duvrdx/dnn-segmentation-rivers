@@ -1,24 +1,22 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 import segmentation_models_pytorch as smp
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
 import os
 import numpy as np
-from PIL import Image
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import pickle
 from datetime import datetime
 
-# Certifique-se de que essa classe existe no seu ambiente ou arquivo importado
 from datasets import CBERS4MUXDataset
 
 LEARNING_RATE = 1e-4
-NUM_EPOCHS = 100
+NUM_EPOCHS = 200
 
 
 def _otsu_threshold_from_prob_map(prob_map: np.ndarray) -> float:
@@ -62,14 +60,13 @@ def _binarize_with_otsu(outputs: torch.Tensor):
 
 def load_cbers4_dataset(data_dir: str):
     """Carrega os caminhos dos arquivos de um único diretório de dataset."""
-    RED_DIR = os.path.join(data_dir, 'bands/BAND7')
-    GREEN_DIR = os.path.join(data_dir, 'bands/BAND6')
-    BLUE_DIR = os.path.join(data_dir, 'bands/BAND5')
-    NIR_DIR = os.path.join(data_dir, 'bands/BAND8')
-    MASK_DIR = os.path.join(data_dir, 'groundtruth')
+    RED_DIR = os.path.join(data_dir, 'red')
+    GREEN_DIR = os.path.join(data_dir, 'green')
+    BLUE_DIR = os.path.join(data_dir, 'blue')
+    NIR_DIR = os.path.join(data_dir, 'nir')
+    MASK_DIR = os.path.join(data_dir, 'masks_ibge')
 
-    ids = sorted([f for f in os.listdir(MASK_DIR)
-                 if f.endswith('.tiff') or f.endswith('.tif')])
+    ids = sorted([f for f in os.listdir(RED_DIR) if f.endswith('.tiff') or f.endswith('.tif')])
 
     red_paths = [os.path.join(RED_DIR, f) for f in ids]
     nir_paths = [os.path.join(NIR_DIR, f) for f in ids]
@@ -80,15 +77,63 @@ def load_cbers4_dataset(data_dir: str):
     return red_paths, nir_paths, blue_paths, green_paths, mask_paths
 
 
+class CBERS4CroppedDataset(torch.utils.data.Dataset):
+    """Converte cada amostra 256x256 em 4 crops 128x128."""
+
+    def __init__(
+        self,
+        red_image_paths,
+        green_image_paths,
+        blue_image_paths,
+        nir_image_paths,
+        mask_paths,
+        transform=None,
+        indices_to_add=None,
+    ):
+        self.base = CBERS4MUXDataset(
+            red_image_paths=red_image_paths,
+            green_image_paths=green_image_paths,
+            blue_image_paths=blue_image_paths,
+            nir_image_paths=nir_image_paths,
+            mask_paths=mask_paths,
+            transform=transform,
+            indices_to_add=indices_to_add,
+        )
+
+    def __len__(self):
+        return len(self.base) * 4
+
+    def __getitem__(self, idx):
+        base_idx = idx // 4
+        crop_idx = idx % 4
+
+        image, mask = self.base[base_idx]
+
+        h_mid = image.shape[1] // 2
+        w_mid = image.shape[2] // 2
+
+        if crop_idx == 0:  # top-left
+            h_slice, w_slice = slice(0, h_mid), slice(0, w_mid)
+        elif crop_idx == 1:  # top-right
+            h_slice, w_slice = slice(0, h_mid), slice(w_mid, image.shape[2])
+        elif crop_idx == 2:  # bottom-left
+            h_slice, w_slice = slice(h_mid, image.shape[1]), slice(0, w_mid)
+        else:  # bottom-right
+            h_slice, w_slice = slice(h_mid, image.shape[1]), slice(w_mid, image.shape[2])
+
+        image = image[:, h_slice, w_slice]
+        mask = mask[:, h_slice, w_slice]
+
+        return image, mask
+
+
 def create_dataloaders(
     train_paths: dict,
     val_paths: dict,
-    img_size: int = 400,  # <--- RECOMENDADO: Aumente para 256 para DeepLab
-    batch_size: int = 16
+    img_size: int = 256,
+    batch_size: int = 8,
 ):
-    """
-    Cria DataLoaders de treino e validação.
-    """
+    """Cria DataLoaders de treino e validação."""
     train_transform = A.Compose([
         A.Resize(height=img_size, width=img_size),
         A.HorizontalFlip(p=0.5),
@@ -102,56 +147,49 @@ def create_dataloaders(
         ToTensorV2(),
     ])
 
-    train_loader_dataset = CBERS4MUXDataset(
+    train_loader_dataset = CBERS4CroppedDataset(
         red_image_paths=train_paths['red'],
         nir_image_paths=train_paths['nir'],
         blue_image_paths=train_paths['blue'],
         green_image_paths=train_paths['green'],
         mask_paths=train_paths['masks'],
         transform=train_transform,
-        indices_to_add=['NDWI']
+        indices_to_add=['NDVI', 'NDWI', 'GNDVI'],
     )
 
-    val_loader_dataset = CBERS4MUXDataset(
+    val_loader_dataset = CBERS4CroppedDataset(
         red_image_paths=val_paths['red'],
         nir_image_paths=val_paths['nir'],
         blue_image_paths=val_paths['blue'],
         green_image_paths=val_paths['green'],
         mask_paths=val_paths['masks'],
         transform=val_transform,
-        indices_to_add=['NDWI']
+        indices_to_add=['NDVI', 'NDWI', 'GNDVI'],
     )
 
-    # --- CORREÇÃO AQUI ---
-    # drop_last=True: Se o dataset não for divisível pelo batch_size,
-    # descarta o último pedaço para evitar batch de tamanho 1.
     train_loader = DataLoader(
         train_loader_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=4,
         pin_memory=True,
-        drop_last=True  # <--- ADICIONE ISTO OBRIGATORIAMENTE
+        drop_last=True,
     )
 
-    # Para validação não é estritamente necessário (pois model.eval() desliga o BN),
-    # mas não faz mal deixar False ou True. Geralmente validação pode ser False.
     val_loader = DataLoader(
         val_loader_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=4,
         pin_memory=True,
-        drop_last=False
+        drop_last=False,
     )
 
     return train_loader, val_loader
 
 
 def save_predictions(model, loader, device, num_examples=5, results_dir="./results"):
-    """
-    Salva exemplos de previsão do primeiro batch do loader.
-    """
+    """Salva exemplos de previsão do primeiro batch do loader."""
     print("Salvando exemplos de previsões...")
     model.eval()
 
@@ -194,7 +232,7 @@ def save_predictions(model, loader, device, num_examples=5, results_dir="./resul
         ax2.axis('off')
 
         ax3.imshow(preds_cpu[i].squeeze(), cmap='gray')
-        ax3.set_title("Máscara Prevista (DeepLabV3)")
+        ax3.set_title("Máscara Prevista (SegFormer)")
         ax3.axis('off')
 
         pred_path = os.path.join(results_dir, f'prediction_example_{i+1}.png')
@@ -203,16 +241,12 @@ def save_predictions(model, loader, device, num_examples=5, results_dir="./resul
 
     print(f"{min(num_examples, len(images_cpu))} exemplos salvos no diretório '{results_dir}'.")
 
-# ### ALTERAÇÃO ###: Renomeado para execute_deeplab_train e tipagem ajustada
 
-
-def execute_deeplab_train(model: nn.Module, device: torch.device, train_loader: DataLoader,
-                          val_loader: DataLoader, loss_fn, num_epochs: int, results_dir="./results"):
-
+def execute_segformer_train(model: nn.Module, device: torch.device, train_loader: DataLoader,
+                            val_loader: DataLoader, loss_fn, num_epochs: int, results_dir="./results"):
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.1, patience=10)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10)
 
     scaler = torch.amp.GradScaler('cuda', enabled=torch.cuda.is_available())
 
@@ -225,8 +259,7 @@ def execute_deeplab_train(model: nn.Module, device: torch.device, train_loader: 
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0
-        pbar = tqdm(
-            train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Training]")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Training]")
 
         for images, masks in pbar:
             images, masks = images.to(device), masks.to(device)
@@ -247,8 +280,7 @@ def execute_deeplab_train(model: nn.Module, device: torch.device, train_loader: 
         val_loss = 0
         val_iou = 0
         with torch.no_grad():
-            vbar = tqdm(
-                val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Validation]")
+            vbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Validation]")
 
             for images, masks in vbar:
                 images, masks = images.to(device), masks.to(device)
@@ -256,19 +288,20 @@ def execute_deeplab_train(model: nn.Module, device: torch.device, train_loader: 
                 loss = loss_fn(outputs, masks)
                 val_loss += loss.item()
                 preds, _ = _binarize_with_otsu(outputs)
-                tp, fp, fn, tn = smp.metrics.get_stats(
-                    preds.float(), masks.long(), mode='binary', threshold=0.5)
+                tp, fp, fn, tn = smp.metrics.get_stats(preds.float(), masks.long(), mode='binary', threshold=0.5)
                 iou = smp.metrics.iou_score(tp, fp, fn, tn, reduction='macro')
                 val_iou += iou.item()
-                vbar.set_postfix(
-                    {'val_loss': f'{loss.item():.4f}', 'val_iou': f'{iou.item():.4f}'})
+                vbar.set_postfix({'val_loss': f'{loss.item():.4f}', 'val_iou': f'{iou.item():.4f}'})
 
         avg_val_loss = val_loss / len(val_loader)
         avg_val_iou = val_iou / len(val_loader)
         history['val_loss'].append(avg_val_loss)
         history['val_iou'].append(avg_val_iou)
 
-        print(f"\nEpoch {epoch+1}/{num_epochs} -> Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Val IoU: {avg_val_iou:.4f}")
+        print(
+            f"\nEpoch {epoch+1}/{num_epochs} -> Train Loss: {avg_train_loss:.4f}, "
+            f"Val Loss: {avg_val_loss:.4f}, Val IoU: {avg_val_iou:.4f}"
+        )
 
         if avg_val_iou > best_iou:
             best_iou = avg_val_iou
@@ -276,13 +309,11 @@ def execute_deeplab_train(model: nn.Module, device: torch.device, train_loader: 
             os.makedirs(results_dir, exist_ok=True)
             model_path = os.path.join(results_dir, 'best_model.pth')
             torch.save(model.state_dict(), model_path)
-            print(
-                f"🎉 Novo melhor modelo salvo em {model_path} com IoU: {best_iou:.4f}")
+            print(f"Novo melhor modelo salvo em {model_path} com IoU: {best_iou:.4f}")
 
         scheduler.step(avg_val_loss)
 
-        # Plot learning curves
-        if epoch > 0:  # Evita plotar se falhar na primeira
+        if epoch > 0:
             plt.figure(figsize=(12, 5))
             plt.subplot(1, 2, 1)
             plt.plot(history['train_loss'], label='Train Loss')
@@ -300,8 +331,7 @@ def execute_deeplab_train(model: nn.Module, device: torch.device, train_loader: 
             plt.legend()
             plt.grid(True)
             plt.tight_layout()
-            learning_curve_path = os.path.join(
-                results_dir, 'learning_curve.png')
+            learning_curve_path = os.path.join(results_dir, 'learning_curve.png')
             plt.savefig(learning_curve_path)
             plt.close()
 
@@ -309,8 +339,7 @@ def execute_deeplab_train(model: nn.Module, device: torch.device, train_loader: 
 
     best_model_path = os.path.join(results_dir, 'best_model.pth')
     if os.path.exists(best_model_path):
-        print(
-            f"\nCarregando o melhor modelo de '{best_model_path}' para gerar exemplos.")
+        print(f"\nCarregando o melhor modelo de '{best_model_path}' para gerar exemplos.")
         model.load_state_dict(torch.load(best_model_path))
         save_predictions(model, val_loader, device, 6, results_dir)
     else:
@@ -329,61 +358,45 @@ def execute_deeplab_train(model: nn.Module, device: torch.device, train_loader: 
     }
 
 
-def combined_loss(y_pred, y_true, fn_1='focal', fn_2='bce'):
+
+def combined_loss(y_pred, y_true, fn_1='dice', fn_2='bce'):
+    
     fns = {
         'dice': smp.losses.DiceLoss(mode='binary'),
         'bce': smp.losses.SoftBCEWithLogitsLoss(),
         'focal': smp.losses.FocalLoss(mode='binary'),
         # 'topk': smp.losses.TopKLoss(smp.losses.SoftBCEWithLogitsLoss(), k=0.2, mode='binary'),
     }
-
+    
     return 0.5 * fns[fn_1](y_pred, y_true) + 0.5 * fns[fn_2](y_pred, y_true)
 
 
-# --- Configuração dos Treinamentos ---
 trains = {
-    # 'train_doce_test_itapemirim': {
-    #     'train_dirs': ['./datasets/doce_cbers_mux'],
-    #     'test_dirs': ['./datasets/itapemirim_cbers_mux']
-    # },
-    # 'train_itapemirim_test_doce': {
-    #     'train_dirs': ['./datasets/itapemirim_cbers_mux'],
-    #     'test_dirs': ['./datasets/doce_cbers_mux']
-    # },
-    # 'itapemirim': {
-    #     'train_dirs': ['../datasets/itapemirim_256'],
-    #     'test_dirs': None
-    # },
-    # 'doce': {
-    #     'train_dirs': ['./datasets/doce_cbers_mux'],
-    #     'test_dirs': None
-    # },
     'itapemirim_doce': {
-        'train_dirs': ['../Datasets/itapemirim_river', '../Datasets/doce_river'],
-        'test_dirs': None
+        'train_dirs': ['../datasets/itapemirim_256', '../datasets/doce_256'],
+        # 'train_dirs': ['../datasets/itapemirim_cbers_mux', '../datasets/doce_cbers_mux'],
+        
+        'test_dirs': None,
     }
-    # 'all': {
-    #     'train_dirs': ['/c/Users/duvrd/Documents/Mestrado/dataset'],
-    #     'test_dirs': None
-    # }
 }
 
 backbones = [
-    "mit_b0",
-    "resnet152",
-    # "vgg11"
+    'mit_b5',
+    # 'mit_b1',
+    # 'mit_b2',
+    # 'mit_b3',
+    # 'mit_b4',
+    # 'mit_b5',
 ]
 
 all_results_summary = []
 
-# --- LOOP PRINCIPAL DE TREINAMENTO ---
-for train_num in range(5):
+
+for train_num in range(1):
     for train_name, config in trains.items():
         for backbone in backbones:
-            print(
-                f"\n{'='*80}\n--- Iniciando Experimento: Treino='{train_name}', Backbone='{backbone}' [DeepLabV3] ---\n{'='*80}")
+            print(f"\n{'='*80}\n--- Iniciando Experimento: Treino='{train_name}', Backbone='{backbone}' [SegFormer] ---\n{'='*80}")
 
-            # Carregar caminhos dos dados de TREINO
             train_red, train_nir, train_blue, train_green, train_masks = [], [], [], [], []
             for data_dir in config['train_dirs']:
                 r, n, b, g, m = load_cbers4_dataset(data_dir)
@@ -393,18 +406,38 @@ for train_num in range(5):
                 train_green.extend(g)
                 train_masks.extend(m)
 
-            # Definir os caminhos de TREINO e VALIDAÇÃO
             if config['test_dirs'] is None:
-                print(
-                    f"Dividindo o dataset '{train_name}' em treino e validação (80/20).")
-                (train_red_paths, val_red_paths, train_nir_paths, val_nir_paths, train_blue_paths, val_blue_paths,
-                 train_green_paths, val_green_paths, train_mask_paths, val_mask_paths) = train_test_split(
-                    train_red, train_nir, train_blue, train_green, train_masks, test_size=0.2, random_state=42)
+                print(f"Dividindo o dataset '{train_name}' em treino e validação (80/20).")
+                (
+                    train_red_paths,
+                    val_red_paths,
+                    train_nir_paths,
+                    val_nir_paths,
+                    train_blue_paths,
+                    val_blue_paths,
+                    train_green_paths,
+                    val_green_paths,
+                    train_mask_paths,
+                    val_mask_paths,
+                ) = train_test_split(
+                    train_red,
+                    train_nir,
+                    train_blue,
+                    train_green,
+                    train_masks,
+                    test_size=0.2,
+                    random_state=42,
+                )
             else:
                 test_dataset_name = os.path.basename(config['test_dirs'][0])
-                print(
-                    f"Usando '{train_name}' para treino e '{test_dataset_name}' para validação.")
-                train_red_paths, train_nir_paths, train_blue_paths, train_green_paths, train_mask_paths = train_red, train_nir, train_blue, train_green, train_masks
+                print(f"Usando '{train_name}' para treino e '{test_dataset_name}' para validação.")
+                train_red_paths, train_nir_paths, train_blue_paths, train_green_paths, train_mask_paths = (
+                    train_red,
+                    train_nir,
+                    train_blue,
+                    train_green,
+                    train_masks,
+                )
 
                 val_red_paths, val_nir_paths, val_blue_paths, val_green_paths, val_mask_paths = [], [], [], [], []
                 for data_dir in config['test_dirs']:
@@ -415,32 +448,47 @@ for train_num in range(5):
                     val_green_paths.extend(g)
                     val_mask_paths.extend(m)
 
-            train_paths_dict = {'red': train_red_paths, 'nir': train_nir_paths,
-                                'blue': train_blue_paths, 'green': train_green_paths, 'masks': train_mask_paths}
-            val_paths_dict = {'red': val_red_paths, 'nir': val_nir_paths,
-                              'blue': val_blue_paths, 'green': val_green_paths, 'masks': val_mask_paths}
+            train_paths_dict = {
+                'red': train_red_paths,
+                'nir': train_nir_paths,
+                'blue': train_blue_paths,
+                'green': train_green_paths,
+                'masks': train_mask_paths,
+            }
+            val_paths_dict = {
+                'red': val_red_paths,
+                'nir': val_nir_paths,
+                'blue': val_blue_paths,
+                'green': val_green_paths,
+                'masks': val_mask_paths,
+            }
 
-            # Nota: DeepLab geralmente prefere imagens maiores (256+). Se der erro, aumente img_size aqui.
             train_loader, val_loader = create_dataloaders(
-                train_paths=train_paths_dict, val_paths=val_paths_dict, img_size=400, batch_size=4)
-
-            # ### ALTERAÇÃO PRINCIPAL ###: Substituindo smp.Unet por smp.DeepLabV3
-            # Dica: Você também pode usar smp.DeepLabV3Plus (geralmente melhor)
-            model = smp.DeepLabV3Plus(
-                encoder_name=backbone,
-                encoder_weights="imagenet",
-                in_channels=5,
-                classes=1,
-                activation='sigmoid'
+                train_paths=train_paths_dict,
+                val_paths=val_paths_dict,
+                img_size=256,
+                batch_size=8,
             )
 
-            device = torch.device(
-                'cuda' if torch.cuda.is_available() else 'cpu')
-            results_dir = f'./experiments/stats_dl/{train_num}/results_{train_name}_{backbone}_deeplabv3'
+            model = smp.Segformer(
+                encoder_name=backbone,
+                encoder_weights='imagenet',
+                in_channels=7,
+                classes=1,
+                activation='sigmoid',
+            )
 
-            final_metrics = execute_deeplab_train(
-                model=model, device=device, train_loader=train_loader, val_loader=val_loader,
-                loss_fn=combined_loss, num_epochs=NUM_EPOCHS, results_dir=results_dir
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            results_dir = f'./experiments/stats_segformer/{train_num}/results_{train_name}_{backbone}_segformer'
+
+            final_metrics = execute_segformer_train(
+                model=model,
+                device=device,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                loss_fn=combined_loss,
+                num_epochs=NUM_EPOCHS,
+                results_dir=results_dir,
             )
 
             summary_line = (
@@ -451,17 +499,16 @@ for train_num in range(5):
             all_results_summary.append(summary_line)
 
             print(f"--- Resumo do Experimento ---\n{summary_line}")
-            print(
-                f"--- Experimento '{train_name}' com backbone '{backbone}' concluído. ---")
+            print(f"--- Experimento '{train_name}' com backbone '{backbone}' concluído. ---")
 
 
-summary_filepath = 'final_results_summary.txt'
+summary_filepath = 'final_results_summary_segformer.txt'
 print(f"\n{'='*80}\nSalvando resumo final de todos os experimentos em: {summary_filepath}\n{'='*80}")
 
 with open(summary_filepath, 'w', encoding='utf-8') as f:
-    f.write("--- RESUMO FINAL DOS EXPERIMENTOS (DEEPLABV3) ---\n")
+    f.write("--- RESUMO FINAL DOS EXPERIMENTOS (SEGFORMER) ---\n")
     f.write(f"Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    f.write("="*40 + "\n\n")
+    f.write("=" * 40 + "\n\n")
 
     for summary in all_results_summary:
         f.write(summary)
