@@ -7,11 +7,11 @@ DATA_DIRS=(
     "./Datasets/doce_river"
 )
 BACKBONE="resnet152"
-EPOCHS=1
+EPOCHS=50
 BATCH_SIZE=8
 IMG_SIZE=512
 VAL_SPLIT=0.2
-CROP_FACTOR=2
+CROP_FACTOR=1
 RESULTS_DIR="./test_results"
 
 # Carrega configurações locais do .env se existir
