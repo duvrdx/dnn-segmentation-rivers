@@ -28,3 +28,6 @@ __pycache__/
 *.pyc
 *.pyo
 .ipynb_checkpoints/
+
+# Arquivos de ambiente local contendo chaves/senhas
+.env

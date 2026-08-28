@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ─── Configuração ───────────────────────────────────────────────────────────
 DATA_DIRS=(
-    "/home/duvrdx/mestrado/Datasets/itapemirim_river"
+    # "/home/duvrdx/mestrado/Datasets/itapemirim_river"
     "/home/duvrdx/mestrado/Datasets/doce_river"
 )
 BACKBONE="resnet152"
@@ -14,9 +14,15 @@ VAL_SPLIT=0.2
 CROP_FACTOR=2
 RESULTS_DIR="./test_results"
 
-# Telegram (opcional - deixe vazio para desabilitar)
-TELEGRAM_TOKEN="8490199108:AAFbRsl9DTIycyy8XBBGpeK4ERrqwPu_jbI"
-TELEGRAM_CHAT_ID="1031002712"
+# Carrega configurações locais do .env se existir
+if [[ -f ".env" ]]; then
+    # shellcheck disable=SC1091
+    source .env
+fi
+
+# Telegram (opcional - deixe vazio para desabilitar; lido do .env)
+TELEGRAM_TOKEN="${TELEGRAM_TOKEN:-}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 # ────────────────────────────────────────────────────────────────────────────
 
 # Log setup
