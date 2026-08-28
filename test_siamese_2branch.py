@@ -476,7 +476,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, default="../datasets/doce_256",
                         help="Diretório(s) do dataset, separados por vírgula")
     parser.add_argument("--backbone", type=str, default="resnet152",
-                        choices=["timm-efficientnet-b7", "mit_b5", "resnet152", "efficientnet-b5"])
+                        help="Any backbone supported by segmentation_models_pytorch (e.g. resnet152, efficientnet-b5, mit_b5)")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--val_split", type=float, default=0.2)
