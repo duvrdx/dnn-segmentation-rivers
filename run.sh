@@ -6,7 +6,7 @@ DATA_DIRS=(
     "./Datasets/itapemirim_river"
     "./Datasets/doce_river"
 )
-BACKBONE="resnet152"
+BACKBONES=("resnet50" "resnet152")
 EPOCHS=50
 BATCH_SIZE=8
 IMG_SIZE=512
@@ -28,8 +28,6 @@ TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 # Log setup
 mkdir -p ./logs
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-LOG_FILE="./logs/run_${TIMESTAMP}.log"
-STDERR_FILE="./logs/run_${TIMESTAMP}.stderr"
 
 # ─── Telegram helpers ────────────────────────────────────────────────────────
 send_telegram() {
@@ -72,80 +70,121 @@ if [[ -f "./venv/bin/activate" ]]; then
     source ./venv/bin/activate
 fi
 
+DATA_DIRS_STR=$(IFS=,; echo "${DATA_DIRS[*]}")
+
 send_telegram "🚀 Treino Iniciado!
-Backbone: $BACKBONE | Epochs: $EPOCHS | Img size: $IMG_SIZE | Crop factor: $CROP_FACTOR
+Backbones: ${BACKBONES[*]} | Epochs: $EPOCHS | Img size: $IMG_SIZE | Crop factor: $CROP_FACTOR
 Datasets: ${DATA_DIRS[*]}"
 
-# ─── Execução: stdout → tee (terminal + LOG_FILE), stderr → STDERR_FILE ─────
-DATA_DIRS_STR=$(IFS=,; echo "${DATA_DIRS[*]}")
-set +e
-python test_siamese_2branch.py \
-    --data_dir "$DATA_DIRS_STR" \
-    --backbone "$BACKBONE" \
-    --epochs "$EPOCHS" \
-    --batch_size "$BATCH_SIZE" \
-    --val_split "$VAL_SPLIT" \
-    --img_size "$IMG_SIZE" \
-    --crop_factor "$CROP_FACTOR" \
-    --results_dir "$RESULTS_DIR" \
-    2>"$STDERR_FILE" | tee "$LOG_FILE"
-EXIT_CODE="${PIPESTATUS[0]}"
-set -e
-# ────────────────────────────────────────────────────────────────────────────
+# ─── Loop por backbone ───────────────────────────────────────────────────────
+PASSED=0
+FAILED=0
+FAILED_BACKBONES=()
 
-if [[ "$EXIT_CODE" -ne 0 ]]; then
+for BACKBONE in "${BACKBONES[@]}"; do
+    LOG_FILE="./logs/run_${TIMESTAMP}_${BACKBONE}.log"
+    STDERR_FILE="./logs/run_${TIMESTAMP}_${BACKBONE}.stderr"
+
     echo ""
-    echo "❌ Treino FALHOU (exit $EXIT_CODE)"
+    echo "══════════════════════════════════════════════════"
+    echo "  Backbone: $BACKBONE"
+    echo "══════════════════════════════════════════════════"
 
-    # Append stderr ao final do LOG_FILE
-    {
+    send_telegram "⏳ Iniciando backbone: $BACKBONE
+Epochs: $EPOCHS | Img size: $IMG_SIZE | Crop factor: $CROP_FACTOR
+Datasets: ${DATA_DIRS[*]}"
+
+    set +e
+    python test_siamese_2branch.py \
+        --data_dir "$DATA_DIRS_STR" \
+        --backbone "$BACKBONE" \
+        --epochs "$EPOCHS" \
+        --batch_size "$BATCH_SIZE" \
+        --val_split "$VAL_SPLIT" \
+        --img_size "$IMG_SIZE" \
+        --crop_factor "$CROP_FACTOR" \
+        --results_dir "$RESULTS_DIR" \
+        2>"$STDERR_FILE" | tee "$LOG_FILE"
+    EXIT_CODE="${PIPESTATUS[0]}"
+    set -e
+
+    if [[ "$EXIT_CODE" -ne 0 ]]; then
         echo ""
-        echo "=== STDERR (exit $EXIT_CODE) ==="
-        cat "$STDERR_FILE"
-    } >> "$LOG_FILE"
+        echo "❌ Backbone $BACKBONE FALHOU (exit $EXIT_CODE)"
+        FAILED=$((FAILED + 1))
+        FAILED_BACKBONES+=("$BACKBONE")
 
-    # Envia stderr limpo pelo Telegram
-    STDERR_CONTENT="$(cat "$STDERR_FILE" 2>/dev/null || echo '(stderr indisponível)')"
-    # Trunca em 3800 chars para respeitar limite do Telegram (4096)
-    if [[ "${#STDERR_CONTENT}" -gt 3800 ]]; then
-        STDERR_CONTENT="...(truncado)
+        # Append stderr ao log
+        {
+            echo ""
+            echo "=== STDERR (exit $EXIT_CODE) ==="
+            cat "$STDERR_FILE"
+        } >> "$LOG_FILE"
+
+        STDERR_CONTENT="$(cat "$STDERR_FILE" 2>/dev/null || echo '(stderr indisponível)')"
+        if [[ "${#STDERR_CONTENT}" -gt 3800 ]]; then
+            STDERR_CONTENT="...(truncado)
 ${STDERR_CONTENT: -3800}"
-    fi
+        fi
 
-    send_telegram "❌ Treino FALHOU (exit $EXIT_CODE)
-Backbone: $BACKBONE | Img size: $IMG_SIZE | Crop factor: $CROP_FACTOR
+        send_telegram "❌ Backbone $BACKBONE FALHOU (exit $EXIT_CODE)
+Img size: $IMG_SIZE | Crop factor: $CROP_FACTOR
 
 --- STDERR ---
 ${STDERR_CONTENT}"
 
-else
-    echo ""
-    echo "✅ Treino concluído! Log: $LOG_FILE"
+    else
+        echo ""
+        echo "✅ Backbone $BACKBONE concluído! Log: $LOG_FILE"
+        PASSED=$((PASSED + 1))
 
-    # Extrai bloco de métricas: de "RESULTADOS:" até o próximo "==...=="
-    METRICS_BLOCK="$(awk '/^RESULTADOS:/{found=1} found{print} found && /^={10,}/{count++; if(count==1 && !/RESULTADOS/){exit}}' "$LOG_FILE")"
-    if [[ -z "$METRICS_BLOCK" ]]; then
-        METRICS_BLOCK="(bloco RESULTADOS não encontrado no log)"
-    fi
+        METRICS_BLOCK="$(awk '/^RESULTADOS:/{found=1} found{print} found && /^={10,}/{count++; if(count==1 && !/RESULTADOS/){exit}}' "$LOG_FILE")"
+        if [[ -z "$METRICS_BLOCK" ]]; then
+            METRICS_BLOCK="(bloco RESULTADOS não encontrado no log)"
+        fi
 
-    send_telegram "✅ Treino concluído!
-Backbone: $BACKBONE | Epochs: $EPOCHS | Img size: $IMG_SIZE | Crop factor: $CROP_FACTOR
+        send_telegram "✅ Backbone $BACKBONE concluído!
+Epochs: $EPOCHS | Img size: $IMG_SIZE | Crop factor: $CROP_FACTOR
 Datasets: ${DATA_DIRS[*]}
 
 ${METRICS_BLOCK}"
 
-    # Envia imagens de test_results via sendPhoto
-    PHOTO_COUNT=0
-    while IFS= read -r -d '' img; do
-        send_telegram_photo "$img" "$(basename "$img")"
-        PHOTO_COUNT=$((PHOTO_COUNT + 1))
-    done < <(find "$RESULTS_DIR" -maxdepth 1 \( -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" \) -print0 2>/dev/null | sort -z)
+        # Envia imagens deste backbone
+        PHOTO_COUNT=0
+        while IFS= read -r -d '' img; do
+            send_telegram_photo "$img" "[${BACKBONE}] $(basename "$img")"
+            PHOTO_COUNT=$((PHOTO_COUNT + 1))
+        done < <(find "$RESULTS_DIR" -maxdepth 1 \( -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" \) -print0 2>/dev/null | sort -z)
 
-    if [[ "$PHOTO_COUNT" -eq 0 ]]; then
-        echo "[telegram] nenhuma imagem encontrada em $RESULTS_DIR"
-    else
-        echo "[telegram] $PHOTO_COUNT imagem(ns) enviada(s)."
+        if [[ "$PHOTO_COUNT" -eq 0 ]]; then
+            echo "[telegram] nenhuma imagem encontrada em $RESULTS_DIR"
+        else
+            echo "[telegram] $PHOTO_COUNT imagem(ns) enviada(s) para backbone $BACKBONE."
+        fi
     fi
+done
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─── Resumo geral ─────────────────────────────────────────────────────────────
+TOTAL=${#BACKBONES[@]}
+echo ""
+echo "══════════════════════════════════════════════════"
+echo "  Resumo: $PASSED/$TOTAL passaram | $FAILED falharam"
+[[ "${#FAILED_BACKBONES[@]}" -gt 0 ]] && echo "  Falhas: ${FAILED_BACKBONES[*]}"
+echo "══════════════════════════════════════════════════"
+
+if [[ "$FAILED" -eq 0 ]]; then
+    SUMMARY_ICON="✅"
+    SUMMARY_STATUS="Todos os backbones concluídos com sucesso!"
+else
+    SUMMARY_ICON="⚠️"
+    SUMMARY_STATUS="$FAILED de $TOTAL backbone(s) falharam: ${FAILED_BACKBONES[*]}"
 fi
 
-exit "$EXIT_CODE"
+send_telegram "${SUMMARY_ICON} Resumo Final
+$SUMMARY_STATUS
+Passaram: $PASSED/$TOTAL | Falharam: $FAILED/$TOTAL
+Epochs: $EPOCHS | Img size: $IMG_SIZE | Crop factor: $CROP_FACTOR
+Datasets: ${DATA_DIRS[*]}"
+
+[[ "$FAILED" -eq 0 ]] && exit 0 || exit 1
